@@ -1,0 +1,10 @@
+venv310/
+venv/
+venv_l/
+.env
+*.md
+.env
+sql.db
+app/__pycache__/
+temp/
+markdown_output/

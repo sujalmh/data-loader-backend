@@ -126,26 +126,24 @@ def create_markdown_table(data):
 
     return "\n".join([header_md, separator_md] + rows_md)
 
-def csv_to_markdown_file(csv_path: str):
+def csv_to_markdown_file(markdown_path: str):
     # Ensure input file exists
-    if not os.path.exists(csv_path):
-        raise FileNotFoundError(f"CSV file not found: {csv_path}")
+    if not os.path.exists(markdown_path):
+        raise FileNotFoundError(f"CSV file not found: {markdown_path}")
     
     # Step 1: Read CSV content
-    with open(csv_path, "r", encoding="utf-8") as f:
-        csv_text = f.read()
-    parsed_data = parse_csv_with_llm(csv_text)
+    with open(markdown_path, "r", encoding="utf-8") as f:
+        markdown_text = f.read()
+    parsed_data = parse_csv_with_llm(markdown_text)
     
     # Step 3: Create Markdown table
     markdown_content = create_markdown_table(parsed_data)
-    file_name = os.path.basename(csv_path)
-    base_name, _ = os.path.splitext(file_name)
-    output_file_path = os.path.join(output_dir, f"{base_name}.md")
+    
     # Step 4: Save Markdown output
-    with open(output_file_path, "w", encoding="utf-8") as f:
+    with open(markdown_path, "w", encoding="utf-8") as f:
         f.write(markdown_content)
     
-    print(f"✅ Markdown table saved to {output_file_path}")
+    print(f"✅ Markdown table saved to {markdown_path}")
     return markdown_content
 
 
@@ -318,7 +316,7 @@ def table_complexity(analyzer: MarkdownAnalyzer) -> int:
     for tbl in tables_data["Table"]:
         header = tbl.get("header", [])
         rows = tbl.get("rows", [])
-
+        print(header)
         if not header and not rows:
             continue
 
@@ -332,7 +330,7 @@ def table_complexity(analyzer: MarkdownAnalyzer) -> int:
             continue
 
         # Header irregular if contains 'Unnamed'
-        header_irregular = any("unnamed" in str(h).lower() for h in header)
+        header_irregular = any("unnamed" in str(h).lower() or len(h) == 0 for h in header)
 
         # Data irregular if any row's col count != expected
         data_irregular = any(len(r) != base_cols for r in rows)
@@ -346,9 +344,9 @@ def table_complexity(analyzer: MarkdownAnalyzer) -> int:
             score = 3
         else:
             score = 2  # Data irregular but header regular
-
+        print(score)
         overall_score = max(overall_score, score)
-
+    
     return overall_score
 
 def csv_to_markdown_table(file_path):

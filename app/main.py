@@ -8,7 +8,7 @@ from fastapi import FastAPI, File, UploadFile, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
-from app.services.process_file import process_pdf
+from app.services.process_file import process_pdf, csv_to_markdown_file
 from app.services.file_handler import extract_markdown_tables, clean_markdown
 from app.services.table_agent import ingest_markdown_table
 from app.services.table_agent import ingest_markdown_table, ColumnSchema, TableDetails, StructuredIngestionDetails, SemiStructuredIngestionDetails, UnstructuredIngestionDetails, IngestionDetails, FileIngestionResult
@@ -135,10 +135,24 @@ async def process_files(files: List[UploadFile] = File(...)):
         print("Raw result from process_pdf:", result)  # Inspect the result
 
         if not result:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Could not process file: {file.filename}"
-            )
+            if not file.filename:
+                continue
+            base_name = os.path.basename(file.filename)
+            file_path = os.path.join(UPLOAD_DIRECTORY, str(base_name))
+
+            if not os.path.exists(file_path):
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"File not found: {file.filename}"
+                )
+
+            result = process_pdf(file_path)
+            if not result:
+
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Could not process file: {file.filename}"
+                )
         
         try:
             quality_metrics = QualityMetrics(
@@ -211,6 +225,8 @@ async def start_ingestion_process(
                 for table_file in table_files:
                     with open(table_file, 'r', encoding='utf-8') as tf:
                         table_markdown = tf.read()
+                    if details_data.get('qualityMetrics').get('complexity')>1:
+                        table_markdown = csv_to_markdown_file(table_file)
                     table_ingest_result = ingest_markdown_table(table_markdown, str(filename), details_data.get('size', 0))
                     
                     print(f"Table ingestion result: {table_ingest_result}")

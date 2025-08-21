@@ -387,13 +387,10 @@ def process_pdf(file_path):
     complexity_score = table_complexity(analyzer)
     analyzer_instance = FileAnalyzer()
     analysis = analyzer_instance.analyze_single_file(file_path)
-    structure = analysis.get('content_type')
+    structure = analysis['json']['content_type']
 
-    print(analysis, structure)
     if structure == 'structured':
         structure = "Structured"
-    elif structure == 'semi-structured':
-        structure = "Semi-Structured"
     else:
         structure = "Unstructured"
 

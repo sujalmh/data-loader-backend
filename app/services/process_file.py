@@ -16,6 +16,7 @@ from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 from markitdown import MarkItDown
 from mrkdwn_analysis import MarkdownAnalyzer
+from app.services.file_profiler_agent import FileAnalyzer
 
 MISTRAL_OCR_KEY = os.getenv("MISTRAL_OCR_KEY")
 client = Mistral(api_key=MISTRAL_OCR_KEY)
@@ -189,19 +190,6 @@ def check_format_consistency(markdown):
         1 if len(list_lines) > 1 else 0,
     ])
     return count  # 0 to 3 scale
-
-def check_completeness(markdown):
-    lines = markdown.strip().split('\n')
-    non_empty_lines = [line for line in lines if line.strip()]
-
-    ratio = len(non_empty_lines) / len(lines) if len(lines) > 0 else 0
-    if ratio >= 0.8:
-        return 3  # Complete
-    elif ratio >= 0.5:
-        return 2
-    elif ratio >= 0.2:
-        return 1
-    return 0  # Incomplete
 
 def analyze_table(table_text):
     """
@@ -395,16 +383,24 @@ def process_pdf(file_path):
             return None
 
     quality_scores = check_parse_quality(markdown_result)
-    completeness_scores = check_completeness(markdown_result)
     analyzer = MarkdownAnalyzer(markdown_file_path)
     complexity_score = table_complexity(analyzer)
+    analyzer_instance = FileAnalyzer()
+    analysis = analyzer_instance.analyze_single_file(file_path)
+    structure = analysis.get('content_type')
 
-    structure = categorize_structure(markdown_result)
+    print(analysis, structure)
+    if structure == 'structured':
+        structure = "Structured"
+    elif structure == 'semi-structured':
+        structure = "Semi-Structured"
+    else:
+        structure = "Unstructured"
 
     return {
         "file": file_path,
         "structure": structure,
         "avg_parse_quality": round(quality_scores, 2),
-        "avg_completeness": round(completeness_scores, 2),
-        "complexity_score": (3 - round(complexity_score, 2)) + 1
+        "complexity_score": (3 - round(complexity_score, 2)) + 1,
+        "analysis": analysis
     }

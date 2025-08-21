@@ -8,3 +8,6 @@ sql.db
 app/__pycache__/
 temp/
 markdown_output/
+uploaded_files/
+temp_output/
+data/

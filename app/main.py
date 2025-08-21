@@ -11,10 +11,11 @@ from contextlib import asynccontextmanager
 from app.services.process_file import process_pdf, csv_to_markdown_file
 from app.services.file_handler import extract_markdown_tables, clean_markdown
 from app.services.table_agent import ingest_markdown_table
-from app.services.table_agent import ingest_markdown_table, ColumnSchema, TableDetails, StructuredIngestionDetails, SemiStructuredIngestionDetails, UnstructuredIngestionDetails, IngestionDetails, FileIngestionResult
+from app.services.table_agent import ingest_markdown_table
+from app.services.vector_ingestion import ingest_unstructured_file
 
-from pydantic import BaseModel, Field
-from typing import List, Union, Literal, Optional
+from app.models.model_definition import QualityMetrics, AnalysisResult, FileProcessingResult, ColumnSchema, TableDetails, StructuredIngestionDetails, SemiStructuredIngestionDetails, UnstructuredIngestionDetails, IngestionDetails, FileIngestionResult, IngestionResponse
+
 import json
 
 UPLOAD_DIRECTORY = "uploaded_files"
@@ -60,25 +61,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-class QualityMetrics(BaseModel):
-    """Defines the structure for data quality metrics."""
-    parseAccuracy: int
-    completeness: int
-    complexity: int
-
-class FileProcessingResult(BaseModel):
-    """Defines the structure for the final processing result of a file."""
-    fileName: str
-    qualityMetrics: QualityMetrics
-    classification: str
-
-class IngestionResponse(BaseModel):
-    """The final response object returned by the API."""
-    results: List[FileIngestionResult]
 
 # --- API Endpoints ---
-@app.post("/ingest-files/", summary="Ingest and Store Files")
-async def ingest_files(files: List[UploadFile] = File(...)):
+@app.post("/upload-files/", summary="Upload and Store Files")
+async def upload_files(files: List[UploadFile] = File(...)):
     if not files:
         raise HTTPException(status_code=400, detail="No files were sent.")
 
@@ -106,10 +92,16 @@ async def ingest_files(files: List[UploadFile] = File(...)):
             await file.close()
 
     return {
-        "message": f"Successfully stored {len(stored_files)} file(s).",
-        "stored_files": stored_files,
-        "storage_path": os.path.abspath(UPLOAD_DIRECTORY)
-    }
+    "message": f"Successfully stored {len(stored_files)} file(s).",
+    "files": [
+        {
+            "name": f,
+            "path": os.path.join(os.path.abspath(UPLOAD_DIRECTORY), f)
+        }
+        for f in stored_files
+    ]
+}
+
 
 @app.post("/process-files", response_model=List[FileProcessingResult])
 async def process_files(files: List[UploadFile] = File(...)):
@@ -158,21 +150,31 @@ async def process_files(files: List[UploadFile] = File(...)):
                 )
         
         try:
+            # 1. Create the QualityMetrics object
             quality_metrics = QualityMetrics(
-                parseAccuracy=result.get("avg_parse_quality", 0),
-                completeness=result.get("avg_completeness", 0),
-                complexity=result.get("complexity_score", 0)
+                parseAccuracy=result.get("avg_parse_quality", 0.0),
+                complexity=result.get("complexity_score", 0.0)
             )
 
-            results.append(
-                FileProcessingResult(
-                    fileName=file.filename,
-                    qualityMetrics=quality_metrics,
-                    classification=result.get("structure", "Unknown")
-                )
+            # 2. Create the AnalysisResult object
+            analysis_data = result.get("analysis", {}).get("json", {})
+            # Pass known fields directly and let Pydantic handle the rest
+            analysis_result = AnalysisResult(**analysis_data)
+
+
+            # 3. Create the final FileProcessingResult object
+            final_result = FileProcessingResult(
+                fileName=file.filename,
+                qualityMetrics=quality_metrics,
+                classification=result.get("structure", "Unknown"),
+                analysis=analysis_result
             )
+            print(analysis_result)
+            results.append(final_result)
+
         except Exception as e:
-            print(f"Error creating FileProcessingResult for {file.filename}: {e}")
+            # This will catch errors during Pydantic model validation
+            print(f"Error creating response model for {file.filename}: {e}")
             raise HTTPException(
                 status_code=500,
                 detail=f"Could not create processing result for {file.filename}. Error: {e}"
@@ -200,13 +202,12 @@ async def start_ingestion_process(
     files_map = {file.filename: file for file in files}
 
     for details_data in details_list:
-        if details_data.get("classification") == "Structured":
-            filename = details_data.get("name")
-            if not filename:
+        filename = details_data.get("name")
+        if not filename:
                 continue
-
-            filename_without_ext, file_type = os.path.splitext(str(filename))
-            
+        filename_without_ext, file_type = os.path.splitext(str(filename))
+        full_filepath = details_data.get("path")
+        if details_data.get("classification") == "Structured":
             try:
                 file_path = os.path.join(MARKDOWN_DIRECTORY, filename_without_ext+ ".md")
                 print(f"Processing file: {file_path}")
@@ -253,6 +254,22 @@ async def start_ingestion_process(
                         error=f"An unexpected error occurred: {str(e)}"
                     )
                 )
+        else:
+            analysis = details_data.get("analysis")
+            subdomain = analysis.get("subdomain")
+            publishing_authority = analysis.get("publishing_authority")
+            try:
+                result_success = ingest_unstructured_file(
+                    file_path=full_filepath,
+                    category=subdomain,
+                    reference=publishing_authority,
+                    url="https://esankhyiki.mospi.gov.in"
+                    )
+                ingestion_results.append(result_success)
+            except ImportError:
+                print("\nPlease install fpdf to run the example with a dummy file: pip install fpdf")
+            except Exception as e:
+                print(f"\nAn error occurred during the example run: {e}")
     result = IngestionResponse(results=ingestion_results)
     print(f"Ingestion results: {result}")
     return result

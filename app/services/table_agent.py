@@ -7,53 +7,8 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough
 from langchain_google_genai import GoogleGenerativeAI
 from langchain_core.messages import AIMessage
-from pydantic import BaseModel
-from pydantic import BaseModel, Field
-from typing import List, Union, Literal, Optional
 
-class ColumnSchema(BaseModel):
-    """Defines the schema for a single column in a structured table."""
-    name: str
-    type: str
-    primary: Optional[bool] = False
-
-class TableDetails(BaseModel):
-    """Holds all the details for a single table extracted from a structured file."""
-    tableName: str
-    schema_details: List[ColumnSchema]
-    rowsInserted: int
-    sqlCommands: List[str]
-
-class StructuredIngestionDetails(BaseModel):
-    """Details for a successfully ingested structured file, supporting multiple tables."""
-    type: Literal["structured"]
-    tables: List[TableDetails]
-
-class SemiStructuredIngestionDetails(BaseModel):
-    """Details for a successfully ingested semi-structured file."""
-    type: Literal["semi-structured"]
-    structuredData: dict
-    unstructuredData: dict
-
-class UnstructuredIngestionDetails(BaseModel):
-    """Details for a successfully ingested unstructured file."""
-    type: Literal["unstructured"]
-    collection: str
-    chunksCreated: int
-    embeddingsGenerated: int
-    chunkingMethod: str
-    embeddingModel: str
-
-# A union of all possible ingestion detail types
-IngestionDetails = Union[StructuredIngestionDetails, SemiStructuredIngestionDetails, UnstructuredIngestionDetails]
-
-class FileIngestionResult(BaseModel):
-    """Represents the result of processing a single file."""
-    fileName: str
-    fileSize: int
-    status: Literal["success", "failed"]
-    ingestionDetails: Optional[IngestionDetails] = None
-    error: Optional[str] = None
+from app.models.model_definition import QualityMetrics, AnalysisResult, FileProcessingResult, ColumnSchema, TableDetails, StructuredIngestionDetails, SemiStructuredIngestionDetails, UnstructuredIngestionDetails, IngestionDetails, FileIngestionResult, IngestionResponse
 
 # --- CONFIGURATION ---
 # In a real application, you would initialize your actual LLM here.

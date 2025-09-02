@@ -15,7 +15,7 @@ from pymilvus.exceptions import ParamError
 from langdetect import detect
 from PyPDF2 import PdfReader, PdfWriter
 
-from app.models.model_definition import QualityMetrics, AnalysisResult, FileProcessingResult, ColumnSchema, TableDetails, StructuredIngestionDetails, SemiStructuredIngestionDetails, UnstructuredIngestionDetails, IngestionDetails, FileIngestionResult, IngestionResponse
+from app.models.model_definition import QualityMetrics, AnalysisResult, FileProcessingResult, ColumnSchema, TableDetails, StructuredIngestionDetails, UnstructuredIngestionDetails, IngestionDetails, FileIngestionResult, IngestionResponse
 
 # ==============================================================================
 # 2. Environment Setup and Milvus Connection

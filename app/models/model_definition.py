@@ -15,7 +15,7 @@ class AnalysisResult(BaseModel):
     content_type: Optional[str] = None
     domain: Optional[str] = None
     subdomain: Optional[str] = None
-    intents: Optional[List] = None
+    intents: Optional[Union[List[str], str]] = None
     publishing_authority: Optional[str] = None
     published_date: Optional[str] = None
     period_of_reference: Optional[str] = None
@@ -47,18 +47,13 @@ class TableDetails(BaseModel):
     schema_details: List[ColumnSchema]
     rowsInserted: int
     sqlCommands: List[str]
+    fileSelectorPrompt: Optional[str] = None
 
 class StructuredIngestionDetails(BaseModel):
     """Details for a successfully ingested structured file, supporting multiple tables."""
     type: Literal["structured"]
     tables: List[TableDetails]
-
-class SemiStructuredIngestionDetails(BaseModel):
-    """Details for a successfully ingested semi-structured file."""
-    type: Literal["semi-structured"]
-    structuredData: dict
-    unstructuredData: dict
-
+ 
 class UnstructuredIngestionDetails(BaseModel):
     """Details for a successfully ingested unstructured file."""
     type: Literal["unstructured"]
@@ -69,14 +64,14 @@ class UnstructuredIngestionDetails(BaseModel):
     embeddingModel: str
 
 # A union of all possible ingestion detail types
-IngestionDetails = Union[StructuredIngestionDetails, SemiStructuredIngestionDetails, UnstructuredIngestionDetails]
+IngestionDetails = Union[StructuredIngestionDetails, UnstructuredIngestionDetails]
 
 class FileIngestionResult(BaseModel):
     """Represents the result of processing a single file."""
     fileName: str
     fileSize: int
     status: Literal["success", "failed"]
-    ingestionDetails: Optional[IngestionDetails] = None
+    ingestionDetails: Optional[Union[IngestionDetails, List[IngestionDetails]]] = None
     error: Optional[str] = None
 
 class IngestionResponse(BaseModel):

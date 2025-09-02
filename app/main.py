@@ -11,10 +11,9 @@ from contextlib import asynccontextmanager
 from app.services.process_file import process_pdf, csv_to_markdown_file
 from app.services.file_handler import extract_markdown_tables, clean_markdown
 from app.services.table_agent import ingest_markdown_table
-from app.services.table_agent import ingest_markdown_table
 from app.services.vector_ingestion import ingest_unstructured_file
 
-from app.models.model_definition import QualityMetrics, AnalysisResult, FileProcessingResult, ColumnSchema, TableDetails, StructuredIngestionDetails, SemiStructuredIngestionDetails, UnstructuredIngestionDetails, IngestionDetails, FileIngestionResult, IngestionResponse
+from app.models.model_definition import QualityMetrics, AnalysisResult, FileProcessingResult, ColumnSchema, TableDetails, StructuredIngestionDetails, UnstructuredIngestionDetails, IngestionDetails, FileIngestionResult, IngestionResponse
 
 import json
 
@@ -202,11 +201,17 @@ async def start_ingestion_process(
     files_map = {file.filename: file for file in files}
 
     for details_data in details_list:
+        file_ingestion_result = []
         filename = details_data.get("name")
         if not filename:
                 continue
         filename_without_ext, file_type = os.path.splitext(str(filename))
         full_filepath = details_data.get("path")
+        analysis = details_data.get("analysis")
+        intents = analysis.get("intents")
+        brief_summary = analysis.get("brief_summary")
+        subdomain = analysis.get("subdomain")
+        publishing_authority = analysis.get("publishing_authority")
         if details_data.get("classification") == "Structured":
             try:
                 file_path = os.path.join(MARKDOWN_DIRECTORY, filename_without_ext+ ".md")
@@ -231,7 +236,7 @@ async def start_ingestion_process(
                         table_markdown = tf.read()
                     if details_data.get('qualityMetrics').get('complexity')>1:
                         table_markdown = csv_to_markdown_file(table_file)
-                    table_ingest_result = ingest_markdown_table(table_markdown, str(filename), details_data.get('size', 0))
+                    table_ingest_result = ingest_markdown_table(table_markdown, str(filename), details_data.get('size', 0), intents, brief_summary, subdomain, publishing_authority)
                     
                     print(f"Table ingestion result: {table_ingest_result}")
                     table_details.append(table_ingest_result)
@@ -255,9 +260,6 @@ async def start_ingestion_process(
                     )
                 )
         else:
-            analysis = details_data.get("analysis")
-            subdomain = analysis.get("subdomain")
-            publishing_authority = analysis.get("publishing_authority")
             try:
                 result_success = ingest_unstructured_file(
                     file_path=full_filepath,
@@ -265,11 +267,46 @@ async def start_ingestion_process(
                     reference=publishing_authority,
                     url="https://esankhyiki.mospi.gov.in"
                     )
+                file_ingestion_result.append(result_success.ingestionDetails)
                 ingestion_results.append(result_success)
             except ImportError:
                 print("\nPlease install fpdf to run the example with a dummy file: pip install fpdf")
             except Exception as e:
                 print(f"\nAn error occurred during the example run: {e}")
+
+            try:
+                file_path = os.path.join(MARKDOWN_DIRECTORY, filename_without_ext+ ".md")
+                table_files = extract_markdown_tables(file_path)
+                print(f"Extracted {len(table_files)} tables from {file_path}")
+                table_details = []
+                for table_file in table_files:
+                    with open(table_file, 'r', encoding='utf-8') as tf:
+                        table_markdown = tf.read()
+                    if details_data.get('qualityMetrics').get('complexity')>1:
+                        table_markdown = csv_to_markdown_file(table_file)
+                    table_ingest_result = ingest_markdown_table(table_markdown, str(filename), details_data.get('size', 0), intents, brief_summary, subdomain, publishing_authority)
+                    
+                    print(f"Table ingestion result: {table_ingest_result}")
+                    table_details.append(table_ingest_result)
+                    
+
+                structured_ingestion_details = StructuredIngestionDetails(type="structured", tables=table_details)
+                file_ingestion_result.append(structured_ingestion_details)
+            except Exception as e:
+                ingestion_results.append(
+                    FileIngestionResult(
+                        fileName=str(filename),
+                        fileSize=details_data.get('size', 0),
+                        status="failed",
+                        error=f"An unexpected error occurred: {str(e)}"
+                    )
+                )
+            ingestion_results.append(FileIngestionResult(
+                        fileName=str(filename),
+                        fileSize=details_data.get('size', 0),
+                        status="success",
+                        ingestionDetails=file_ingestion_result,
+                    ))
     result = IngestionResponse(results=ingestion_results)
     print(f"Ingestion results: {result}")
     return result

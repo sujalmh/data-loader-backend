@@ -6,13 +6,13 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough
 from langchain_google_genai import GoogleGenerativeAI
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage   
+from langchain.prompts import PromptTemplate
+from langchain.schema import SystemMessage, HumanMessage
 
-from app.models.model_definition import QualityMetrics, AnalysisResult, FileProcessingResult, ColumnSchema, TableDetails, StructuredIngestionDetails, SemiStructuredIngestionDetails, UnstructuredIngestionDetails, IngestionDetails, FileIngestionResult, IngestionResponse
+from app.models.model_definition import QualityMetrics, AnalysisResult, FileProcessingResult, ColumnSchema, TableDetails, StructuredIngestionDetails, UnstructuredIngestionDetails, IngestionDetails, FileIngestionResult, IngestionResponse
+from app.services.normalization_table import run_normalization
 
-# --- CONFIGURATION ---
-# In a real application, you would initialize your actual LLM here.
-# For example:
 from dotenv import load_dotenv
 import os
 load_dotenv()
@@ -44,6 +44,7 @@ def get_db_schema(conn):
         for col in columns:
             # col structure: (id, name, type, notnull, default_value, pk)
             schema_info += f"  - {col[1]} ({col[2]})\n"
+    print("Table:",tables)
     return schema_info.strip()
 
 def get_table_schema(conn, table_name):
@@ -100,29 +101,37 @@ def get_matching_table_name(schema, df_columns, df_sample_rows):
     Uses an LLM to determine if the new data can fit into an existing table.
     """
     print("\nStep 2: Asking LLM to find a matching table...")
+    schema_description = str(schema) if schema else "The database is empty. There are no tables."
+
     prompt = ChatPromptTemplate.from_messages([
-        ("system", """You are an expert database administrator. Your task is to determine if new data can be inserted into an existing table.
+        ("system", """You are an expert database administrator specializing in data normalization. Your task is to determine if new data can be inserted into an existing table, even if it requires restructuring.
 
-Here is the current database schema:
-{schema}
+    **Database Schema:**
+    {schema}
 
-Here are the headers and a few sample rows of the new data to be inserted:
-Headers: {columns}
-Sample Rows:
-{sample_rows}
+    **New Data to Insert:**
+    - **Headers:** {columns}
+    - **Sample Rows:**
+    {sample_rows}
 
-Does the structure and content of the new data strongly match one of the existing tables?
-- A strong match means the columns are semantically equivalent and the data types are compatible.
-- If a strong match is found, respond with ONLY the name of that table.
-- If no strong match is found, respond with ONLY the word 'None'.
-"""),
+    **Your Instructions (Follow these strictly):**
+    1.  **Analyze New Data Headers:** Look for patterns in the new data headers. Specifically, identify if headers embed metadata like dates (e.g., 'jun_2024'), categories (e.g., 'rural', 'urban'), or other repeating attributes.
+        - **Example Pattern:** Headers like 'rural_jun_2024_index', 'urban_jun_2024_index' contain three pieces of information: area ('rural'/'urban'), time ('jun_2024'), and the metric ('index').
+
+    2.  **Compare Semantically:** Compare the *semantic meaning* of the new data with the existing table schemas.
+        - **A good match is a table designed to store this *type* of data in a normalized way.** For example, if the new data has a 'rural_jun_2024_index' column, it is a strong match for a table named `price_indices` with columns like `area_type`, `month`, `year`, and `index_value`. The literal names do not have to match.
+
+    3.  **Your Response:**
+        - If you find one strong semantic match, respond with ONLY the table name.
+        - If you find no strong matches or if the schema is empty, respond with ONLY the word 'None'.
+    """),
         ("human", "Based on the schema and new data, what is the matching table name?")
     ])
 
     chain = prompt | llm | StrOutputParser()
     
     result = chain.invoke({
-        "schema": schema,
+        "schema": schema_description,
         "columns": ", ".join(df_columns),
         "sample_rows": df_sample_rows.to_string(index=False)
     })
@@ -161,49 +170,82 @@ def parse_llm_json(llm_output_str):
     except json.JSONDecodeError:
         return None
 
-def generate_new_table_details(df_columns):
+def generate_new_table_details(df_columns, intents, subdomain):
     """
     Uses an LLM to generate a table name and a detailed column mapping,
     with a retry mechanism for up to 2 retries.
     """
     print("\nStep 3: Asking LLM to generate a new table schema...")
-    prompt = ChatPromptTemplate.from_messages([
+    intent_string = ", ".join(intents) if isinstance(intents, list) else intents
+    table_name_prompt = ChatPromptTemplate.from_messages([
+        ("system", """You are an expert database designer. Your task is to generate a new SQL table name based on a list of column headers from a dataframe.
+
+        File Intents: {intent_string}
+        Dataframe Headers: {columns}
+        Subdomain: {subdomain}
+
+        ### Naming Guidelines:
+        1. Use **snake_case**.
+        2. The name must be **short but descriptive** and match the **domain/intent**.
+        3. Capture key context such as:
+        - **Time/frequency**: annual, monthly, quarterly, provisional, calendar_wise, financial_year_wise, etc.
+        - **Scope**: city_wise, state_wise, sector_wise, etc.
+        - **Units/indicators**: crore, usd, index, value, growth_rate, data.
+        4. Avoid generic words like "table", "dataset", or "file". Instead, use **economic/statistical terms**.
+        5. Use abbreviations where common (e.g., gdp, cpi, wpi, iip, bdi).
+        6. Ensure it **resembles existing patterns** like:
+        - annual_estimate_gdp_crore
+        - city_wise_housing_price_indices
+        - consumer_price_index_cpi_for_agricultural_and_rural_labourers
+        - exchange_rate_lcy_usd
+        - iip_monthly_data
+        - whole_sale_price_index_wpi_calendar_wise
+
+        ### Output Format:
+        Return only a JSON object:
+        {{
+        "table_name": "<generated_table_name>"
+        }}
+        """),
+            ("human", "Generate the JSON for my new table.")
+        ])
+
+    column_prompt = ChatPromptTemplate.from_messages([
         ("system", """You are an expert database designer. Your task is to create a schema for a new SQL table based on a list of column headers from a dataframe.
 
-Dataframe Headers: {columns}
+        File Intents: {intent_string}
+        Dataframe Headers: {columns}
 
-Guidelines:
-1.  Generate a suitable SQL table name in `snake_case`.
-2.  For each dataframe header, generate a corresponding SQL column name (also in `snake_case`) and infer the most appropriate SQL data type (TEXT, REAL, INTEGER).
-3.  Return a JSON object with two keys: 'table_name' and 'columns'.
-    - 'table_name': The name you generated.
-    - 'columns': A LIST of objects, where each object has three keys: 'df_col' (the original dataframe header), 'sql_col' (the generated SQL column name), and 'sql_type' (the SQL data type).
-    
-Example Response:
-{{
-  "table_name": "example_products",
-  "columns": [
-    {{"df_col": "product_name", "sql_col": "product_name", "sql_type": "TEXT"}},
-    {{"df_col": "item_price", "sql_col": "price", "sql_type": "REAL"}}
-  ]
-}}
-"""),
-        ("human", "Generate the JSON for my new table.")
-    ])
+        Guidelines:
+        1.  For each dataframe header, generate a corresponding SQL column name (also in `snake_case`) and infer the most appropriate SQL data type (TEXT, REAL, INTEGER).
+        2.  Return a JSON object with key: 'columns'.
+            - 'columns': A LIST of objects, where each object has three keys: 'df_col' (the original dataframe header), 'sql_col' (the generated SQL column name), and 'sql_type' (the SQL data type).
+            
+        Example Response:
+        {{
+        "columns": [
+            {{"df_col": "product_name", "sql_col": "product_name", "sql_type": "TEXT"}},
+            {{"df_col": "item_price", "sql_col": "price", "sql_type": "REAL"}}
+        ]
+        }}
+        """),
+                ("human", "Generate the JSON for my new table.")
+            ])
 
-    chain = prompt | llm | StrOutputParser()
+    table_name_chain = table_name_prompt | llm | StrOutputParser()
+    column_chain = column_prompt | llm | StrOutputParser()
     
-    # --- Retry Mechanism ---
     max_retries = 2
-    for attempt in range(max_retries + 1): # Total of 3 attempts
+    for attempt in range(max_retries + 1):
         try:
             print(f"LLM schema generation: Attempt {attempt + 1}/{max_retries + 1}...")
-            response_str = chain.invoke({"columns": ", ".join(df_columns)})
+            table_name_response_str = table_name_chain.invoke({"columns": ", ".join(df_columns), "intent_string": intent_string, "subdomain": subdomain})
             
-            # The LLM is instructed to return JSON, so we parse it.
-            result = parse_llm_json(response_str)
-            print(f"LLM generated schema successfully: {result}")
-            return result # Success: exit the function with the result
+            table_name_result = parse_llm_json(table_name_response_str)
+
+            print(f"LLM generated schema successfully: {table_name_result}")
+            if table_name_result:
+                break
 
         except (json.JSONDecodeError, KeyError) as e:
             print(f"Error on attempt {attempt + 1}: Could not parse LLM response. Error: {e}")
@@ -211,10 +253,75 @@ Example Response:
                 print("Retrying...")
             else:
                 print("All retry attempts have failed.")
+
+    max_retries = 2
+    for attempt in range(max_retries + 1):
+        try:
+            print(f"LLM schema generation: Attempt {attempt + 1}/{max_retries + 1}...")
+            column_response_str = column_chain.invoke({"columns": ", ".join(df_columns), "intent_string": intent_string})
+            
+            column_result = parse_llm_json(column_response_str)
+            print(f"LLM generated schema successfully: {column_result}")
+            
+            if column_result:
+                break
+
+        except (json.JSONDecodeError, KeyError) as e:
+            print(f"Error on attempt {attempt + 1}: Could not parse LLM response. Error: {e}")
+            if attempt < max_retries:
+                print("Retrying...")
+            else:
+                print("All retry attempts have failed.")
+
+    if table_name_result and column_result:
+        result = {"table_name": table_name_result['table_name'], "columns": column_result['columns']}
+        return result
     
-    # If all attempts fail after the loop, return None
     return None
 
+def generate_file_selector_prompt(
+    table_name: str,
+    headers: list[str],
+    sample_rows: list[list[str]],
+    intents: str, brief_summary: str, subdomain: str, publishing_authority: str
+) -> str:
+
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", (
+            "You are an expert at creating concise and effective prompts for a file selector AI. "
+            "Your goal is to generate a 2-3 line description that an AI can use to decide whether "
+            "to select a specific table for a user's query. The description must clearly state the "
+            "table's purpose, data range (like years), and provide explicit 'DO use' and 'DO NOT use' "
+            "conditions based on the rules provided. Follow the style of the examples."
+        )),
+        ("human", (
+            "Generate the prompt for the table '{table_name}'.\n\n"
+            "**Data Headers:**\n{headers}\n\n"
+            "**Sample Data Rows:**\n{rows}\n\n"
+            "**Specific Rules/Intents:**\n{intents}\n\n"
+            "**Brief summary:**\n{brief_summary}\n\n"
+            "**Subdomain:**\n{subdomain}\n\n"
+            "**Publishing Authority:**\n{publishing_authority}\n\n"
+            "**Example Style to Follow:**\n"
+            "1. cpi_inflation_data: This table contains Consumer Price Index (CPI) and inflation data, categorized by year, month, state, sector (Combined, Rural, Urban), group, and sub-group. It includes inflation trends across categories like food, housing, transport, education, and healthcare. This table covers data for year 2017 to 2025. Do NOT choose this table when \"workers\" or \"labourers\" are mentioned.\n"
+            "2. consumer_price_index_cpi_for_agricultural_and_rural_labourers: this table covers data for year 2024. it should be used only when \"agriculture labour\" or \"rural labour\" is mentioned. DO NOT use this file unless \"labour\" is specifically mentioned.\n\n"
+            "**Generated Prompt:**"
+        ))
+    ])
+
+    chain = prompt | llm | StrOutputParser()
+    
+    result = chain.invoke({
+        "table_name": table_name,
+        "headers": ", ".join(headers),
+        "rows":"\n".join([", ".join(map(str, row)) for row in sample_rows]),
+        "intents":intents,
+        "brief_summary":brief_summary,
+        "subdomain":subdomain,
+        "publishing_authority":publishing_authority
+    })
+    
+    return result
 
 def generate_existing_table_column_map(table_schema, df_columns):
     """Uses an LLM to map DataFrame columns to an existing table's columns."""
@@ -254,7 +361,7 @@ def remove_backslash_except_backslash(text: str) -> str:
     return re.sub(r'\\([^\\])', r'\1', text)
 
 
-def ingest_markdown_table(md_table: str, file_name: str, file_size: int, conn = None) -> FileIngestionResult | TableDetails:
+def ingest_markdown_table(md_table: str, file_name: str, file_size: int, intents, brief_summary, subdomain, publishing_authority, conn = None) -> FileIngestionResult | TableDetails:
     
     print("=====================================================")
     print("Starting new ingestion process...")
@@ -269,9 +376,13 @@ def ingest_markdown_table(md_table: str, file_name: str, file_size: int, conn = 
     schema = get_db_schema(conn)
     if len(schema.strip()) == 0:
         print("No existing tables found. Will create a new table.")
+    
+    try:
+        df = run_normalization(remove_backslash_except_backslash(md_table))
+    except Exception as e:
+        print("Error occurred:", e)
 
-    df = parse_markdown_table(remove_backslash_except_backslash(md_table))
-
+    file_selector_prompt = None
     target_table = get_matching_table_name(
         schema=schema,
         df_columns=df.columns.tolist(),
@@ -284,7 +395,7 @@ def ingest_markdown_table(md_table: str, file_name: str, file_size: int, conn = 
         table_schema = get_table_schema(conn, target_table)
         column_map = generate_existing_table_column_map(table_schema, df.columns.tolist())
     else:
-        schema_details = generate_new_table_details(df.columns.tolist())
+        schema_details = generate_new_table_details(df.columns.tolist(), intents, subdomain)
         if not schema_details:
             print("Could not generate a valid new table schema. Aborting.")
             conn.close()
@@ -299,6 +410,17 @@ def ingest_markdown_table(md_table: str, file_name: str, file_size: int, conn = 
             
             print(f"Executing CREATE TABLE statement: {create_sql}")
             execute_query(conn, create_sql)
+            
+            file_selector_prompt = generate_file_selector_prompt(
+                table_name=target_table,
+                headers=df.columns.tolist(),
+                sample_rows=df.head(2).values.tolist(),
+                intents=intents,
+                brief_summary=brief_summary,
+                subdomain=subdomain,
+                publishing_authority=publishing_authority
+            )
+            print(f"Generated Prompt: {file_selector_prompt}")
         else:
             print("Could not generate a valid new table schema. Aborting.")
             conn.close()
@@ -364,7 +486,8 @@ def ingest_markdown_table(md_table: str, file_name: str, file_size: int, conn = 
             tableName=target_table,
             schema_details=schema_details_list,
             rowsInserted=len(rows_to_insert),
-            sqlCommands=sql_commands
+            sqlCommands=sql_commands,
+            fileSelectorPrompt=file_selector_prompt
         )
 
     else:

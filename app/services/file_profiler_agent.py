@@ -60,7 +60,7 @@ DB_HOST = os.getenv("PG_HOST", "localhost")
 DB_PORT = int(os.getenv("PG_PORT", 5432))
 DB_NAME = os.getenv("PG_DB", "file_analysis")
 DB_USER = os.getenv("PG_USER", "postgres")
-DB_PASS = os.getenv("PG_PASS", "mnbvcx12")
+DB_PASS = os.getenv("PG_PASS", "admin")
 DB_MIN_POOL = int(os.getenv("PG_POOL_MIN", 1))
 DB_MAX_POOL = int(os.getenv("PG_POOL_MAX", 8))
 
